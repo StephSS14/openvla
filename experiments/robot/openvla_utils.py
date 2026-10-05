@@ -165,6 +165,7 @@ def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, c
 
     # Process inputs.
     inputs = processor(prompt, image).to(DEVICE, dtype=torch.float16)
+    inputs.pop("attention_mask", None)   # predict_action appends a token to input_ids but not the mask
 
     # Get action.
     action = vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
