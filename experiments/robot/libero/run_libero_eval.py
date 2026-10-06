@@ -22,6 +22,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
+import json
 
 import draccus
 import numpy as np
@@ -49,6 +50,12 @@ from experiments.robot.robot_utils import (
     normalize_gripper_action,
     set_seed_everywhere,
 )
+
+# Metrics import
+sys.path.append("../../..")
+from metrics.scene_classification import get_collidable_geoms, check_support_categories
+from metrics.target_resolution import get_target_geoms, verify as verify_targets
+from metrics.safety_metrics import EpisodeSafetyTracker, aggregate
 
 
 @dataclass
@@ -125,6 +132,11 @@ def eval_libero(cfg: GenerateConfig) -> None:
     log_file = open(local_log_filepath, "w")
     print(f"Logging to local log file: {local_log_filepath}")
 
+    # json logging
+    episodes_path = os.path.join(cfg.local_log_dir, run_id + ".jsonl")
+    episodes_file = open(episodes_path, "a")
+    all_episode_results = []
+
     # Initialize Weights & Biases logging as well
     if cfg.use_wandb:
         wandb.init(
@@ -144,7 +156,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
     resize_size = get_image_resize_size(cfg)
 
     # Start evaluation
-    total_episodes, total_successes = 0, 0
+    total_episodes, total_successes, total_collision = 0, 0, 0
+    # One task
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
         # Get task
         task = task_suite.get_task(task_id)
@@ -155,8 +168,17 @@ def eval_libero(cfg: GenerateConfig) -> None:
         # Initialize LIBERO environment and task description
         env, task_description = get_libero_env(task, cfg.model_family, resolution=256)
 
+        # cheap check if the support and target objects resolved
+        if task_id == 0:
+            check_support_categories(env)   # cheap; catches an unknown fixture category
+            verify_targets(env)             # catches a target matching zero geoms
+
+        target_geoms = get_target_geoms(env)
+        collidable = get_collidable_geoms(env, target_geoms, include_fixtures=True)
+
         # Start episodes
-        task_episodes, task_successes = 0, 0
+        task_episodes, task_successes, task_collision = 0, 0, 0
+        # all episode for one task
         for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
             print(f"\nTask: {task_description}")
             log_file.write(f"\nTask: {task_description}\n")
@@ -166,6 +188,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
             # Set initial states
             obs = env.set_init_state(initial_states[episode_idx])
+
+            # Metrics tracker
+            tracker = EpisodeSafetyTracker(env.sim, collidable_geoms=collidable)
 
             # Setup
             t = 0
@@ -226,6 +251,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
                     # Execute action in environment
                     obs, reward, done, info = env.step(action.tolist())
+
+                    # update metrics after every step (every tick)
+                    tracker.update()
+
                     if done:
                         task_successes += 1
                         total_successes += 1
@@ -245,31 +274,66 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 replay_images, total_episodes, success=done, task_description=task_description, log_file=log_file
             )
 
+            safety = tracker.result()
+            if (safety["collision"]):
+                task_collision += 1
+                total_collision += 1
+
             # Log current results
             print(f"Success: {done}")
             print(f"# episodes completed so far: {total_episodes}")
             print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
+            print(f"Collision: {safety['collision']}")
+            print(f"# collisions: {total_collision} ({total_collision / total_episodes * 100:.1f}%)")
             log_file.write(f"Success: {done}\n")
             log_file.write(f"# episodes completed so far: {total_episodes}\n")
             log_file.write(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n")
+            log_file.write(f"Collision: {safety['collision']}\n")
+            log_file.write(f"# collisions: {total_collision} ({total_collision / total_episodes * 100:.1f}%)\n")
             log_file.flush()
 
+            # record to json file same as openpi
+            record = {
+                "suite": cfg.task_suite_name,
+                "task_id": task_id,
+                "task": task_description,
+                "trial": episode_idx,
+                "success": bool(done),
+                "steps": safety["steps"],
+                "collision": safety["collision"],
+                "collision_objects": safety["collision_objects"],
+                "first_collision_step": safety["first_collision_step"],
+            }
+            episodes_file.write(json.dumps(record) + "\n")
+            episodes_file.flush()
+            all_episode_results.append(record)
+        
         # Log final results
         print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
         print(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
+        print(f"Current task collision rate: {float(task_collision) / float(task_episodes)}")
+        print(f"Current total success rate: {float(total_collision) / float(total_episodes)}")
+
         log_file.write(f"Current task success rate: {float(task_successes) / float(task_episodes)}\n")
         log_file.write(f"Current total success rate: {float(total_successes) / float(total_episodes)}\n")
+        log_file.write(f"Current task collision rate: {float(task_collision) / float(task_episodes)}\n")
+        log_file.write(f"Current total success rate: {float(total_collision) / float(total_episodes)}\n")
         log_file.flush()
         if cfg.use_wandb:
             wandb.log(
                 {
                     f"success_rate/{task_description}": float(task_successes) / float(task_episodes),
                     f"num_episodes/{task_description}": task_episodes,
+                    f"collision_rate/{task_description}": float(task_collision) / float(task_episodes),
+                    f"collision_avoidance_rate/{task_description}": 1 - float(task_collision) / float(task_episodes),
                 }
             )
 
     # Save local log file
     log_file.close()
+    episodes_file.close()
+
+    safety_summary = aggregate(all_episode_results)
 
     # Push total metrics and local log file to wandb
     if cfg.use_wandb:
@@ -277,6 +341,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
             {
                 "success_rate/total": float(total_successes) / float(total_episodes),
                 "num_episodes/total": total_episodes,
+                "collision_rate/total": safety_summary["collision_rate"],
+                "collision_avoidance_rate/total": safety_summary["collision_avoidance_rate"],
             }
         )
         wandb.save(local_log_filepath)
