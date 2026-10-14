@@ -37,6 +37,7 @@ from experiments.robot.libero.libero_utils import (
     get_libero_dummy_action,
     get_libero_env,
     get_libero_image,
+    get_libero_image_gallery_view,
     quat2axisangle,
     save_rollout_video,
 )
@@ -56,6 +57,8 @@ sys.path.append("../../..")
 from metrics.scene_classification import get_collidable_geoms, check_support_categories
 from metrics.target_resolution import get_target_geoms, verify as verify_targets
 from metrics.safety_metrics import EpisodeSafetyTracker, aggregate
+from scripts.place_human import plan_placement
+from scripts.human_scene import add_human
 
 
 @dataclass
@@ -167,6 +170,17 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
         # Initialize LIBERO environment and task description
         env, task_description = get_libero_env(task, cfg.model_family, resolution=256)
+        # Optional human in the scene: HUMAN_XML unset = the no-human baseline
+        human = None
+        if os.environ.get("HUMAN_XML", "").strip():
+            env.reset()                    # fixture poses are only final after a reset
+            human_xml = os.environ["HUMAN_XML"]
+            plan = plan_placement(env, human_xml,
+                                  side="+y",
+                                  clearance=0.05)
+            human = add_human(env, human_xml, plan["xy"], plan["yaw_deg"])
+            print(f"Human: {human}")
+            log_file.write(f"Human: {human}\n")
 
         # cheap check if the support and target objects resolved
         if task_id == 0:
@@ -195,6 +209,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             # Setup
             t = 0
             replay_images = []
+            gallery_images = []
             if cfg.task_suite_name == "libero_spatial":
                 max_steps = 220  # longest training demo has 193 steps
             elif cfg.task_suite_name == "libero_object":
@@ -219,9 +234,11 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
                     # Get preprocessed image
                     img = get_libero_image(obs, resize_size)
+                    gallery_img = get_libero_image_gallery_view(obs)
 
                     # Save preprocessed image for replay video
                     replay_images.append(img)
+                    gallery_images.append(gallery_img)
 
                     # Prepare observations dict
                     # Note: OpenVLA does not take proprio state as input
@@ -271,7 +288,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
             # Save a replay video of the episode
             save_rollout_video(
-                replay_images, total_episodes, success=done, task_description=task_description, log_file=log_file
+                replay_images, total_episodes, success=done, task_description=task_description, log_file=log_file, gallery=False
+            )
+            save_rollout_video(
+                gallery_images, total_episodes, success=done, task_description=task_description, log_file=log_file, gallery=True
             )
 
             safety = tracker.result()
