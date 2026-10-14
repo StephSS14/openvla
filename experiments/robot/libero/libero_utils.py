@@ -19,7 +19,7 @@ def get_libero_env(task, model_family, resolution=256):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     task_bddl_file = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
-    env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
+    env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution, "camera_names": ["agentview", "galleryview"]}
     env = OffScreenRenderEnv(**env_args)
     env.seed(0)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
     return env, task_description
@@ -57,13 +57,25 @@ def get_libero_image(obs, resize_size):
     img = resize_image(img, resize_size)
     return img
 
+def get_libero_image_gallery_view(obs):
+    """Galleryview frame for the rollout video. Not fed to the model, so no
+    resize (keeps full resolution) and no 180-degree rotation (that exists to
+    match the VLA's training preprocessing and would mirror the video)."""
+    return obs["galleryview_image"][::-1]
 
-def save_rollout_video(rollout_images, idx, success, task_description, log_file=None):
+
+def save_rollout_video(rollout_images, idx, success, task_description, log_file=None, gallery=False):
     """Saves an MP4 replay of an episode."""
     rollout_dir = f"./rollouts/{DATE}"
     os.makedirs(rollout_dir, exist_ok=True)
+    gallery_rollout_dir = f"{rollout_dir}/gallery"
+    os.makedirs(gallery_rollout_dir, exist_ok=True)
     processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
-    mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
+    mp4_path = ""
+    if gallery:
+        mp4_path = f"{rollout_dir}/gallery/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
+    else:
+        mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
     video_writer = imageio.get_writer(mp4_path, fps=30)
     for img in rollout_images:
         video_writer.append_data(img)
