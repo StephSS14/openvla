@@ -55,7 +55,7 @@ from experiments.robot.robot_utils import (
 # Metrics import
 sys.path.append("../../..")
 from metrics.scene_classification import get_collidable_geoms, check_support_categories
-from metrics.target_resolution import get_target_geoms, verify as verify_targets
+from metrics.target_resolution import get_target_geoms, build_collision_config, verify as verify_targets
 from metrics.safety_metrics import EpisodeSafetyTracker, aggregate
 from scripts.place_human import plan_placement
 from scripts.human_scene import add_human
@@ -187,8 +187,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             check_support_categories(env)   # cheap; catches an unknown fixture category
             verify_targets(env)             # catches a target matching zero geoms
 
-        target_geoms = get_target_geoms(env)
-        collidable = get_collidable_geoms(env, target_geoms, include_fixtures=True)
+        collision_config = build_collision_config(env, include_fixtures=True, extra_ignore=None)
 
         # Start episodes
         task_episodes, task_successes, task_collision = 0, 0, 0
@@ -204,7 +203,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
             obs = env.set_init_state(initial_states[episode_idx])
 
             # Metrics tracker
-            tracker = EpisodeSafetyTracker(env.sim, collidable_geoms=collidable)
+            tracker = EpisodeSafetyTracker(env.sim, 
+                                           collidable_geoms=collision_config["collidable_geoms"],
+                                           target_geoms=collision_config["target_geoms"],
+                                           grasp_geoms=collision_config["grasp_geoms"],
+                                           destinations_geoms=collision_config["destination_geoms"],
+                                           )
 
             # Setup
             t = 0
@@ -295,7 +299,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             )
 
             safety = tracker.result()
-            if (safety["collision"]):
+            if (safety["unintended_contact"]):
                 task_collision += 1
                 total_collision += 1
 
@@ -303,13 +307,17 @@ def eval_libero(cfg: GenerateConfig) -> None:
             print(f"Success: {done}")
             print(f"# episodes completed so far: {total_episodes}")
             print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
-            print(f"Collision: {safety['collision']}")
-            print(f"# collisions: {total_collision} ({total_collision / total_episodes * 100:.1f}%)")
+            print(f"Unintended contact: {safety['unintended_contact']}")
+            print(f"Direct contact: {safety['direct_contact']}")
+            print(f"Indirect contact: {safety['indirect_contact']}")
+            print(f"# Unintended contacts: {total_collision} ({total_collision / total_episodes * 100:.1f}%)")
             log_file.write(f"Success: {done}\n")
             log_file.write(f"# episodes completed so far: {total_episodes}\n")
             log_file.write(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n")
-            log_file.write(f"Collision: {safety['collision']}\n")
-            log_file.write(f"# collisions: {total_collision} ({total_collision / total_episodes * 100:.1f}%)\n")
+            log_file.write(f"Unintended contact: {safety['unintended_contact']}\n")
+            log_file.write(f"Direct contact: {safety['direct_contact']}")
+            log_file.write(f"Indirect contact: {safety['indirect_contact']}")
+            log_file.write(f"# Unintended contacts: {total_collision} ({total_collision / total_episodes * 100:.1f}%)\n")
             log_file.flush()
 
             # record to json file same as openpi
@@ -320,9 +328,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 "trial": episode_idx,
                 "success": bool(done),
                 "steps": safety["steps"],
-                "collision": safety["collision"],
-                "collision_objects": safety["collision_objects"],
-                "first_collision_step": safety["first_collision_step"],
+                "unintended_contact": safety["unintended_contact"],
+                "direct_contact": safety["direct_contact"],
+                "direct_contact_geoms": safety["direct_contact_geoms"],
+                "indirect_contact": safety["indirect_contact"],
+                "indirect_contacts": safety["indirect_contacts"],
+                "first_contact_step": safety["first_contact_step"],
             }
             episodes_file.write(json.dumps(record) + "\n")
             episodes_file.flush()
@@ -361,8 +372,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
             {
                 "success_rate/total": float(total_successes) / float(total_episodes),
                 "num_episodes/total": total_episodes,
-                "collision_rate/total": safety_summary["collision_rate"],
-                "collision_avoidance_rate/total": safety_summary["collision_avoidance_rate"],
+                "unintended_contact_rate/total": safety_summary["unintended_contact_rate"],
+                "contact_free_rate/total": safety_summary["contact_free_rate"],
             }
         )
         wandb.save(local_log_filepath)
