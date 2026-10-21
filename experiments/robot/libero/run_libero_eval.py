@@ -31,6 +31,8 @@ from libero.libero import benchmark
 
 import wandb
 
+import traceback
+
 # Append current directory so that interpreter can find experiments.robot
 sys.path.append("../..")
 from experiments.robot.libero.libero_utils import (
@@ -54,8 +56,8 @@ from experiments.robot.robot_utils import (
 
 # Metrics import
 sys.path.append("../../..")
-from metrics.scene_classification import get_collidable_geoms, check_support_categories
-from metrics.target_resolution import get_target_geoms, build_collision_config, verify as verify_targets
+from metrics.scene_classification import check_support_categories
+from metrics.target_resolution import build_collision_config, verify as verify_targets
 from metrics.safety_metrics import EpisodeSafetyTracker, aggregate
 from scripts.place_human import plan_placement
 from scripts.human_scene import add_human
@@ -86,7 +88,7 @@ class GenerateConfig:
     # Utils
     #################################################################################################################
     run_id_note: Optional[str] = None                # Extra note to add in run ID for logging
-    local_log_dir: str = "./experiments/logs"        # Local directory for eval logs
+    local_log_dir: str = ""                          # Local directory for eval logs
 
     use_wandb: bool = False                          # Whether to also log results in Weights & Biases
     wandb_project: str = "YOUR_WANDB_PROJECT"        # Name of W&B project to log to (use default!)
@@ -126,19 +128,28 @@ def eval_libero(cfg: GenerateConfig) -> None:
     if cfg.model_family == "openvla":
         processor = get_processor(cfg)
 
+    VLA_RESULTS_DIR = os.getenv("VLA_RESULTS", "./experiments/logs")
+
+    local_log_dir = cfg.local_log_dir
+    if cfg.local_log_dir is None:
+        local_log_dir = f"{VLA_RESULTS_DIR}/libero/openvla/{cfg.task_suite_name}-{DATE_TIME}"
+
     # Initialize local logging
-    run_id = f"{cfg.task_suite_name}-{cfg.model_family}-{DATE_TIME}"
+    run_id = f"{cfg.task_suite_name}-{cfg.model_family}"
     if cfg.run_id_note is not None:
         run_id += f"--{cfg.run_id_note}"
-    os.makedirs(cfg.local_log_dir, exist_ok=True)
-    local_log_filepath = os.path.join(cfg.local_log_dir, run_id + ".txt")
+    os.makedirs(local_log_dir, exist_ok=True)
+    local_log_filepath = os.path.join(local_log_dir, run_id + ".txt")
     log_file = open(local_log_filepath, "w")
     print(f"Logging to local log file: {local_log_filepath}")
 
     # json logging
-    episodes_path = os.path.join(cfg.local_log_dir, run_id + ".jsonl")
-    episodes_file = open(episodes_path, "a")
+    json_l_path = os.path.join(local_log_dir, run_id + ".jsonl")
+    json_l_file = open(json_l_path, "a")
     all_episode_results = []
+
+    # video output
+    vid_path = os.path.join(local_log_dir, "/videos")
 
     # Initialize Weights & Biases logging as well
     if cfg.use_wandb:
@@ -159,7 +170,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
     resize_size = get_image_resize_size(cfg)
 
     # Start evaluation
-    total_episodes, total_successes, total_collision = 0, 0, 0
+    total_episodes, total_successes, total_unintended_contact = 0, 0, 0
     # One task
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
         # Get task
@@ -190,7 +201,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
         collision_config = build_collision_config(env, include_fixtures=True, extra_ignore=None)
 
         # Start episodes
-        task_episodes, task_successes, task_collision = 0, 0, 0
+        task_episodes, task_successes, task_unintended_contact = 0, 0, 0
         # all episode for one task
         for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
             print(f"\nTask: {task_description}")
@@ -284,7 +295,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
                 except Exception as e:
                     print(f"Caught exception: {e}")
-                    log_file.write(f"Caught exception: {e}\n")
+                    traceback.print_exc()
+                    log_file.write(f"Caught exception: {e}\n{traceback.format_exc()}\n")
                     break
 
             task_episodes += 1
@@ -292,16 +304,16 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
             # Save a replay video of the episode
             save_rollout_video(
-                replay_images, total_episodes, success=done, task_description=task_description, log_file=log_file, gallery=False
+                vid_path, replay_images, total_episodes, success=done, task_description=task_description, log_file=log_file, gallery=False
             )
             save_rollout_video(
-                gallery_images, total_episodes, success=done, task_description=task_description, log_file=log_file, gallery=True
+                vid_path, gallery_images, total_episodes, success=done, task_description=task_description, log_file=log_file, gallery=True
             )
 
             safety = tracker.result()
             if (safety["unintended_contact"]):
-                task_collision += 1
-                total_collision += 1
+                task_unintended_contact += 1
+                total_unintended_contact += 1
 
             # Log current results
             print(f"Success: {done}")
@@ -310,14 +322,16 @@ def eval_libero(cfg: GenerateConfig) -> None:
             print(f"Unintended contact: {safety['unintended_contact']}")
             print(f"Direct contact: {safety['direct_contact']}")
             print(f"Indirect contact: {safety['indirect_contact']}")
-            print(f"# Unintended contacts: {total_collision} ({total_collision / total_episodes * 100:.1f}%)")
+            print(f"# Unintended contacts: {total_unintended_contact} ({total_unintended_contact / total_episodes * 100:.1f}%)")
+            print(f"Peak contact force: {safety['peak_contact_force_N']}")
             log_file.write(f"Success: {done}\n")
             log_file.write(f"# episodes completed so far: {total_episodes}\n")
             log_file.write(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n")
             log_file.write(f"Unintended contact: {safety['unintended_contact']}\n")
             log_file.write(f"Direct contact: {safety['direct_contact']}")
             log_file.write(f"Indirect contact: {safety['indirect_contact']}")
-            log_file.write(f"# Unintended contacts: {total_collision} ({total_collision / total_episodes * 100:.1f}%)\n")
+            log_file.write(f"# Unintended contacts: {total_unintended_contact} ({total_unintended_contact / total_episodes * 100:.1f}%)\n")
+            log_file.write(f"Peak contact force: {safety['peak_contact_force_N']}")
             log_file.flush()
 
             # record to json file same as openpi
@@ -334,37 +348,57 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 "indirect_contact": safety["indirect_contact"],
                 "indirect_contacts": safety["indirect_contacts"],
                 "first_contact_step": safety["first_contact_step"],
+                "peak_contact_force_N": safety["peak_contact_force_N"],
+                "contact_events": safety["contact_events"],
+                "indirect_contact_events": safety["indirect_contact_events"],
             }
-            episodes_file.write(json.dumps(record) + "\n")
-            episodes_file.flush()
+            json_l_file.write(json.dumps(record) + "\n")
+            json_l_file.flush()
+            
             all_episode_results.append(record)
         
         # Log final results
         print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
         print(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
-        print(f"Current task collision rate: {float(task_collision) / float(task_episodes)}")
-        print(f"Current total success rate: {float(total_collision) / float(total_episodes)}")
+        print(f"Current task unintended contact  rate: {float(task_unintended_contact) / float(task_episodes)}")
+        print(f"Current total success rate: {float(total_unintended_contact) / float(total_episodes)}")
 
         log_file.write(f"Current task success rate: {float(task_successes) / float(task_episodes)}\n")
         log_file.write(f"Current total success rate: {float(total_successes) / float(total_episodes)}\n")
-        log_file.write(f"Current task collision rate: {float(task_collision) / float(task_episodes)}\n")
-        log_file.write(f"Current total success rate: {float(total_collision) / float(total_episodes)}\n")
+        log_file.write(f"Current task unintended contact rate: {float(task_unintended_contact) / float(task_episodes)}\n")
+        log_file.write(f"Current total success rate: {float(total_unintended_contact) / float(total_episodes)}\n")
         log_file.flush()
         if cfg.use_wandb:
             wandb.log(
                 {
                     f"success_rate/{task_description}": float(task_successes) / float(task_episodes),
                     f"num_episodes/{task_description}": task_episodes,
-                    f"collision_rate/{task_description}": float(task_collision) / float(task_episodes),
-                    f"collision_avoidance_rate/{task_description}": 1 - float(task_collision) / float(task_episodes),
+                    f"unintended_contact_rate/{task_description}": float(task_unintended_contact) / float(task_episodes),
+                    f"unintended_contact_avoidance_rate/{task_description}": 1 - float(task_unintended_contact) / float(task_episodes),
                 }
             )
 
     # Save local log file
     log_file.close()
-    episodes_file.close()
+    json_l_file.close()
 
     safety_summary = aggregate(all_episode_results)
+
+    output = {
+        "suite": cfg.task_suite_name,
+        "success_rate": safety_summary["success_rate"],
+        "safe_success_rate": safety_summary["safe_success_rate"],
+        "unintended_contact_rate": safety_summary["unintended_contact_rate"],
+        "contact_free_rate": safety_summary["contact_free_rate"],
+        "direct_contact_rate": safety_summary["direct_contact_rate"],
+        "indirect_contact_rate": safety_summary["indirect_contact_rate"],
+        "records": all_episode_results,
+    }
+
+    json_path = os.path.join(cfg.local_log_dir, run_id + ".json")
+
+    with open(json_path, "w") as f:
+        json.dump(output, f, indent=2)
 
     # Push total metrics and local log file to wandb
     if cfg.use_wandb:
