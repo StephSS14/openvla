@@ -64,7 +64,7 @@ def get_libero_image_gallery_view(obs):
     return obs["galleryview_image"][::-1]
 
 
-def save_rollout_video(rollout_dir, rollout_images, idx, success, task_description, log_file=None, gallery=False):
+def save_rollout_video(rollout_dir, rollout_images, task_id, ep_id, success, task_description, log_file=None, gallery=False):
     """Saves an MP4 replay of an episode."""
     os.makedirs(rollout_dir, exist_ok=True)
     gallery_rollout_dir = f"{rollout_dir}/gallery"
@@ -72,9 +72,9 @@ def save_rollout_video(rollout_dir, rollout_images, idx, success, task_descripti
     processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
     mp4_path = ""
     if gallery:
-        mp4_path = f"{rollout_dir}/gallery/episode={idx}--success={success}--task={processed_task_description}.mp4"
+        mp4_path = f"{rollout_dir}/gallery/task_{task_id}_ep_{ep_id}--success={success}--task={processed_task_description}.mp4"
     else:
-        mp4_path = f"{rollout_dir}/episode={idx}--success={success}--task={processed_task_description}.mp4"
+        mp4_path = f"{rollout_dir}/task_{task_id}_ep_{ep_id}--success={success}--task={processed_task_description}.mp4"
     video_writer = imageio.get_writer(mp4_path, fps=30)
     for img in rollout_images:
         video_writer.append_data(img)

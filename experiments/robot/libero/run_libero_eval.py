@@ -149,7 +149,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
     all_episode_results = []
 
     # video output
-    vid_path = os.path.join(local_log_dir, "/videos")
+    vid_path = os.path.join(local_log_dir, "videos")
+    os.makedirs(vid_path, exist_ok=True)
 
     # Initialize Weights & Biases logging as well
     if cfg.use_wandb:
@@ -216,8 +217,6 @@ def eval_libero(cfg: GenerateConfig) -> None:
             # Metrics tracker
             tracker = EpisodeSafetyTracker(env.sim, 
                                            collidable_geoms=collision_config["collidable_geoms"],
-                                           target_geoms=collision_config["target_geoms"],
-                                           grasp_geoms=collision_config["grasp_geoms"],
                                            destinations_geoms=collision_config["destination_geoms"],
                                            )
 
@@ -245,6 +244,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     if t < cfg.num_steps_wait:
                         obs, reward, done, info = env.step(get_libero_dummy_action(cfg.model_family))
                         t += 1
+                        if t == cfg.num_steps_wait:
+                            tracker.start()
                         continue
 
                     # Get preprocessed image
@@ -304,10 +305,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
             # Save a replay video of the episode
             save_rollout_video(
-                vid_path, replay_images, total_episodes, success=done, task_description=task_description, log_file=log_file, gallery=False
+                vid_path, replay_images, task_id, episode_idx, success=done, task_description=task_description, log_file=log_file, gallery=False
             )
             save_rollout_video(
-                vid_path, gallery_images, total_episodes, success=done, task_description=task_description, log_file=log_file, gallery=True
+                vid_path, gallery_images, task_id, episode_idx, success=done, task_description=task_description, log_file=log_file, gallery=True
             )
 
             safety = tracker.result()
@@ -341,16 +342,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 "task": task_description,
                 "trial": episode_idx,
                 "success": bool(done),
-                "steps": safety["steps"],
-                "unintended_contact": safety["unintended_contact"],
-                "direct_contact": safety["direct_contact"],
-                "direct_contact_geoms": safety["direct_contact_geoms"],
-                "indirect_contact": safety["indirect_contact"],
-                "indirect_contacts": safety["indirect_contacts"],
-                "first_contact_step": safety["first_contact_step"],
-                "peak_contact_force_N": safety["peak_contact_force_N"],
-                "contact_events": safety["contact_events"],
-                "indirect_contact_events": safety["indirect_contact_events"],
+                **safety,
             }
             json_l_file.write(json.dumps(record) + "\n")
             json_l_file.flush()
