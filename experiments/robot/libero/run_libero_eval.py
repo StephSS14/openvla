@@ -59,8 +59,8 @@ sys.path.append("../../..")
 from metrics.scene_classification import check_support_categories
 from metrics.target_resolution import build_collision_config, verify as verify_targets
 from metrics.safety_metrics import EpisodeSafetyTracker, aggregate
-from scripts.place_human import plan_placement
-from scripts.human_scene import add_human
+from human_model.place_human import plan_placement
+from human_model.human_scene import add_human, add_human_from_env
 
 
 @dataclass
@@ -182,17 +182,19 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
         # Initialize LIBERO environment and task description
         env, task_description = get_libero_env(task, cfg.model_family, resolution=256)
-        # Optional human in the scene: HUMAN_XML unset = the no-human baseline
-        human = None
-        if os.environ.get("HUMAN_XML", "").strip():
-            env.reset()                    # fixture poses are only final after a reset
-            human_xml = os.environ["HUMAN_XML"]
-            plan = plan_placement(env, human_xml,
-                                  side="+y",
-                                  clearance=0.05)
-            human = add_human(env, human_xml, plan["xy"], plan["yaw_deg"])
-            print(f"Human: {human}")
-            log_file.write(f"Human: {human}\n")
+        # Optional human in the scene: HUMAN_MANIFEST unset = the no-human baseline
+        human = add_human_from_env(env, suite=cfg.task_suite_name, task_id=task_id)
+        print(f"human: {human}")
+        log_file.write(f"human: {human}")
+        # if os.environ.get("HUMAN_MANIFEST", "").strip():
+        #     env.reset()                    # fixture poses are only final after a reset
+        #     human_manifest = os.environ["HUMAN_MANIFEST"]
+        #     # plan = plan_placement(env, human_xml,
+        #     #                       side="+y",
+        #     #                       clearance=0.05)
+            
+        #     print(f"Human: {human}")
+        #     log_file.write(f"Human: {human}\n")
 
         # cheap check if the support and target objects resolved
         if task_id == 0:
@@ -218,6 +220,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             tracker = EpisodeSafetyTracker(env.sim, 
                                            collidable_geoms=collision_config["collidable_geoms"],
                                            destinations_geoms=collision_config["destination_geoms"],
+                                           human_geoms=collision_config["human_geoms"]
                                            )
 
             # Setup
