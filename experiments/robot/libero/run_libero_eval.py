@@ -59,6 +59,7 @@ sys.path.append("../../..")
 from metrics.scene_classification import check_support_categories
 from metrics.target_resolution import build_collision_config, verify as verify_targets
 from metrics.safety_metrics import EpisodeSafetyTracker, aggregate
+from metrics.diagnostics import Diagnostics
 from human_model.place_human import plan_placement
 from human_model.human_scene import add_human, add_human_from_env
 
@@ -182,33 +183,24 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
         # Initialize LIBERO environment and task description
         env, task_description = get_libero_env(task, cfg.model_family, resolution=256)
-        # Optional human in the scene: HUMAN_MANIFEST unset = the no-human baseline
-        human = add_human_from_env(env, suite=cfg.task_suite_name, task_id=task_id)
-        print(f"human: {human}")
-        log_file.write(f"human: {human}")
-        # if os.environ.get("HUMAN_MANIFEST", "").strip():
-        #     env.reset()                    # fixture poses are only final after a reset
-        #     human_manifest = os.environ["HUMAN_MANIFEST"]
-        #     # plan = plan_placement(env, human_xml,
-        #     #                       side="+y",
-        #     #                       clearance=0.05)
-            
-        #     print(f"Human: {human}")
-        #     log_file.write(f"Human: {human}\n")
 
         # cheap check if the support and target objects resolved
         if task_id == 0:
             check_support_categories(env)   # cheap; catches an unknown fixture category
             verify_targets(env)             # catches a target matching zero geoms
 
-        collision_config = build_collision_config(env, include_fixtures=True, extra_ignore=None)
-
         # Start episodes
         task_episodes, task_successes, task_unintended_contact = 0, 0, 0
         # all episode for one task
         for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
+            success = False
             print(f"\nTask: {task_description}")
             log_file.write(f"\nTask: {task_description}\n")
+
+            # Add human model
+            human = add_human_from_env(env, suite=cfg.task_suite_name, task_id=task_id, init_state=episode_idx)
+            print(f"human: {human}")
+            log_file.write(f"human: {human}")
 
             # Reset environment
             env.reset()
@@ -216,12 +208,15 @@ def eval_libero(cfg: GenerateConfig) -> None:
             # Set initial states
             obs = env.set_init_state(initial_states[episode_idx])
 
+            # collision config
+            collision_config = build_collision_config(env, include_fixtures=True, extra_ignore=None)
             # Metrics tracker
             tracker = EpisodeSafetyTracker(env.sim, 
-                                           collidable_geoms=collision_config["collidable_geoms"],
-                                           destinations_geoms=collision_config["destination_geoms"],
-                                           human_geoms=collision_config["human_geoms"]
-                                           )
+                                            collidable_geoms=collision_config["collidable_geoms"],
+                                            destinations_geoms=collision_config["destination_geoms"],
+                                            human_geoms=collision_config["human_geoms"]
+                                            )
+            diagnotics = Diagnostics(env, grasp_geoms=collision_config["grasp_geoms"])
 
             # Setup
             t = 0
@@ -290,10 +285,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
                     # update metrics after every step (every tick)
                     tracker.update()
+                    diagnotics.update(obs)
 
                     if done:
                         task_successes += 1
                         total_successes += 1
+                        success = True
                         break
                     t += 1
 
@@ -305,6 +302,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
             task_episodes += 1
             total_episodes += 1
+
+            diagnostics_report = diagnotics.report(t, success)
+            print(diagnostics_report)
 
             # Save a replay video of the episode
             save_rollout_video(
@@ -345,6 +345,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 "task": task_description,
                 "trial": episode_idx,
                 "success": bool(done),
+                "diagnostics_report": diagnostics_report,
                 **safety,
             }
             json_l_file.write(json.dumps(record) + "\n")
