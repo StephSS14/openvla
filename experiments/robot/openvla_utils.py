@@ -27,6 +27,16 @@ OPENVLA_V01_SYSTEM_PROMPT = (
     "The assistant gives helpful, detailed, and polite answers to the user's questions."
 )
 
+# Defaults come from the platform; override with VLA_ATTN / VLA_DTYPE per run.
+_platform = os.environ.get("VLA_PLATFORM", "")
+_default_attn  = "eager" if _platform == "gadi" else "sdpa"
+_default_dtype = "fp16"  if _platform == "gadi" else "bf16"
+
+VLA_ATTN  = os.environ.get("VLA_ATTN",  _default_attn)
+VLA_DTYPE = {"fp16": torch.float16, "bf16": torch.bfloat16}[
+    os.environ.get("VLA_DTYPE", _default_dtype)
+]
+
 
 def get_vla(cfg):
     """Loads and returns a VLA model from checkpoint."""
@@ -43,8 +53,8 @@ def get_vla(cfg):
 
     vla = AutoModelForVision2Seq.from_pretrained(
         cfg.pretrained_checkpoint,
-        attn_implementation="eager",
-        torch_dtype=torch.float16,
+        attn_implementation=VLA_ATTN,
+        torch_dtype=VLA_DTYPE,
         load_in_8bit=cfg.load_in_8bit,
         load_in_4bit=cfg.load_in_4bit,
         low_cpu_mem_usage=True,
@@ -164,7 +174,7 @@ def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, c
         prompt = f"In: What action should the robot take to {task_label.lower()}?\nOut:"
 
     # Process inputs.
-    inputs = processor(prompt, image).to(DEVICE, dtype=torch.float16)
+    inputs = processor(prompt, image).to(DEVICE, dtype=VLA_DTYPE)
     inputs.pop("attention_mask", None)   # predict_action appends a token to input_ids but not the mask
 
     # Get action.
