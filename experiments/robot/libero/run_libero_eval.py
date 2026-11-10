@@ -40,6 +40,7 @@ from experiments.robot.libero.libero_utils import (
     get_libero_env,
     get_libero_image,
     get_libero_image_gallery_view,
+    get_libero_image_eef_view,
     quat2axisangle,
     save_rollout_video,
 )
@@ -221,7 +222,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             # Setup
             t = 0
             replay_images = []
-            gallery_images = []
+            eef_images = []
             if cfg.task_suite_name == "libero_spatial":
                 max_steps = 220  # longest training demo has 193 steps
             elif cfg.task_suite_name == "libero_object":
@@ -248,11 +249,11 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
                     # Get preprocessed image
                     img = get_libero_image(obs, resize_size)
-                    gallery_img = get_libero_image_gallery_view(obs)
+                    eef_img = get_libero_image_eef_view(obs)
 
                     # Save preprocessed image for replay video
                     replay_images.append(img)
-                    gallery_images.append(gallery_img)
+                    eef_images.append(eef_img)
 
                     # Prepare observations dict
                     # Note: OpenVLA does not take proprio state as input
@@ -308,10 +309,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
             # Save a replay video of the episode
             save_rollout_video(
-                vid_path, replay_images, task_id, episode_idx, success=done, task_description=task_description, log_file=log_file, gallery=False
+                vid_path, replay_images, task_id, episode_idx, success=done, task_description=task_description, log_file=log_file, cam="agent"
             )
             save_rollout_video(
-                vid_path, gallery_images, task_id, episode_idx, success=done, task_description=task_description, log_file=log_file, gallery=True
+                vid_path, eef_images, task_id, episode_idx, success=done, task_description=task_description, log_file=log_file, cam="eef"
             )
 
             safety = tracker.result()

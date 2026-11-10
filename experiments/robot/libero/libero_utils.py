@@ -19,7 +19,7 @@ def get_libero_env(task, model_family, resolution=256):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     task_bddl_file = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
-    env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution, "camera_names": ["agentview", "galleryview"]}
+    env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution, "camera_names": ["agentview", "galleryview", "robot0_eye_in_hand"]}
     env = OffScreenRenderEnv(**env_args)
     env.seed(0)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
     return env, task_description
@@ -63,16 +63,19 @@ def get_libero_image_gallery_view(obs):
     match the VLA's training preprocessing and would mirror the video)."""
     return obs["galleryview_image"][::-1]
 
+def get_libero_image_eef_view(obs):
+    return obs["robot0_eye_in_hand"][::-1]
 
-def save_rollout_video(rollout_dir, rollout_images, task_id, ep_id, success, task_description, log_file=None, gallery=False):
+
+def save_rollout_video(rollout_dir, rollout_images, task_id, ep_id, success, task_description, log_file=None, cam="eef"):
     """Saves an MP4 replay of an episode."""
     os.makedirs(rollout_dir, exist_ok=True)
-    gallery_rollout_dir = f"{rollout_dir}/gallery"
-    os.makedirs(gallery_rollout_dir, exist_ok=True)
+    cam_rollout_dir = f"{rollout_dir}/{cam}"
+    os.makedirs(cam_rollout_dir, exist_ok=True)
     processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
     mp4_path = ""
-    if gallery:
-        mp4_path = f"{rollout_dir}/gallery/task_{task_id}_ep_{ep_id}--success={success}--task={processed_task_description}.mp4"
+    if not cam == "agent":
+        mp4_path = f"{rollout_dir}/{cam}/task_{task_id}_ep_{ep_id}--success={success}--task={processed_task_description}.mp4"
     else:
         mp4_path = f"{rollout_dir}/task_{task_id}_ep_{ep_id}--success={success}--task={processed_task_description}.mp4"
     video_writer = imageio.get_writer(mp4_path, fps=30)
