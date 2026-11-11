@@ -64,14 +64,15 @@ def get_libero_image_gallery_view(obs):
     return obs["galleryview_image"][::-1]
 
 def get_libero_image_eef_view(obs):
-    return obs["robot0_eye_in_hand"][::-1]
+    return obs["robot0_eye_in_hand_image"][::-1]
 
 
 def save_rollout_video(rollout_dir, rollout_images, task_id, ep_id, success, task_description, log_file=None, cam="eef"):
     """Saves an MP4 replay of an episode."""
     os.makedirs(rollout_dir, exist_ok=True)
     cam_rollout_dir = f"{rollout_dir}/{cam}"
-    os.makedirs(cam_rollout_dir, exist_ok=True)
+    if not cam == "agent":
+        os.makedirs(cam_rollout_dir, exist_ok=True)
     processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
     mp4_path = ""
     if not cam == "agent":
