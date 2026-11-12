@@ -98,6 +98,9 @@ class GenerateConfig:
 
     seed: int = 7                                    # Random Seed (for reproducibility)
 
+    # additional langauge instructions
+    additional_instruction: str = ""
+
     # fmt: on
 
 
@@ -183,7 +186,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
         initial_states = task_suite.get_task_init_states(task_id)
 
         # Initialize LIBERO environment and task description
-        env, task_description = get_libero_env(task, cfg.model_family, resolution=256)
+        env, task_description = get_libero_env(task, cfg.model_family, resolution=256, additional_instruction=cfg.additional_instruction)
 
         # cheap check if the support and target objects resolved
         if task_id == 0:
@@ -210,7 +213,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             obs = env.set_init_state(initial_states[episode_idx])
 
             # collision config
-            collision_config = build_collision_config(env, include_fixtures=True, extra_ignore=None)
+            collision_config = build_collision_config(env, include_fixtures=True, extra_ignore=None, task_language=task_description)
             # Metrics tracker
             tracker = EpisodeSafetyTracker(env.sim, 
                                             collidable_geoms=collision_config["collidable_geoms"],
