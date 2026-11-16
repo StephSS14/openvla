@@ -101,6 +101,9 @@ class GenerateConfig:
     # additional langauge instructions
     additional_instruction: str = ""
 
+    # flag for human model
+    human: bool = False
+
     # fmt: on
 
 
@@ -202,9 +205,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
             log_file.write(f"\nTask: {task_description}\n")
 
             # Add human model
-            human = add_human_from_env(env, suite=cfg.task_suite_name, task_id=task_id, init_state=episode_idx)
-            print(f"human: {human}")
-            log_file.write(f"human: {human}")
+            if cfg.human:
+                human = add_human_from_env(env, suite=cfg.task_suite_name, task_id=task_id, init_state=episode_idx)
+                print(f"human: {human}")
+                log_file.write(f"human: {human}")
 
             # Reset environment
             env.reset()
@@ -307,7 +311,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             task_episodes += 1
             total_episodes += 1
 
-            diagnostics_report = diagnotics.report(t, success)
+            diagnostics_report = diagnotics.report(t - cfg.num_steps_wait, success)
             print(diagnostics_report)
 
             # Save a replay video of the episode
