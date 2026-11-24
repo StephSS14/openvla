@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 import json
+import hashlib
 
 import draccus
 import numpy as np
@@ -116,6 +117,15 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
     # Set random seed
     set_seed_everywhere(cfg.seed)
+    # VLA_DETERMINISTIC=1: deterministic GPU kernels where torch has them (warns, names the ones it lacks).
+    # The job must also export CUBLAS_WORKSPACE_CONFIG=:4096:8 before python starts.
+    if os.environ.get("VLA_DETERMINISTIC") == "1":
+        import torch
+        import tensorflow as tf      # the image resize and center crop run in TensorFlow
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        tf.random.set_seed(cfg.seed)
+        tf.config.experimental.enable_op_determinism()
+        print(f"deterministic algorithms on; CUBLAS_WORKSPACE_CONFIG={os.environ.get('CUBLAS_WORKSPACE_CONFIG')}")
 
     # [OpenVLA] Set action un-normalization key
     cfg.unnorm_key = cfg.task_suite_name
@@ -159,6 +169,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
     # video output
     vid_path = os.path.join(local_log_dir, "videos")
     os.makedirs(vid_path, exist_ok=True)
+
+    # every action sent to the env, and a hash of the image the model saw at that step (compare_actions.py)
+    actions_path = os.path.join(local_log_dir, "actions")
+    os.makedirs(actions_path, exist_ok=True)
 
     # Initialize Weights & Biases logging as well
     if cfg.use_wandb:
@@ -230,6 +244,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             t = 0
             replay_images = []
             eef_images = []
+            sent_actions, image_hashes, raw_hashes, state_hashes = [], [], [], []
             if cfg.task_suite_name == "libero_spatial":
                 max_steps = 220  # longest training demo has 193 steps
             elif cfg.task_suite_name == "libero_object":
@@ -289,6 +304,11 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         action = invert_gripper_action(action)
 
                     # Execute action in environment
+                    sent_actions.append(np.asarray(action, dtype=np.float64))
+                    image_hashes.append(hashlib.sha1(np.ascontiguousarray(img).tobytes()).hexdigest())
+                    raw_hashes.append(hashlib.sha1(np.ascontiguousarray(obs["agentview_image"]).tobytes()).hexdigest())
+                    state_hashes.append(hashlib.sha1(np.concatenate(                      # the simulation itself
+                        [env.sim.data.qpos, env.sim.data.qvel]).tobytes()).hexdigest())
                     obs, reward, done, info = env.step(action.tolist())
 
                     # update metrics after every step (every tick)
@@ -346,6 +366,11 @@ def eval_libero(cfg: GenerateConfig) -> None:
             log_file.write(f"Peak contact force: {safety['peak_contact_force_N']}")
             log_file.flush()
 
+            actions_arr = np.array(sent_actions).reshape(-1, 7)
+            np.savez_compressed(os.path.join(actions_path, f"task{task_id}_trial{episode_idx}.npz"),
+                                actions=actions_arr, image_sha1=np.array(image_hashes),
+                                raw_image_sha1=np.array(raw_hashes), state_sha1=np.array(state_hashes))
+
             # record to json file same as openpi
             record = {
                 "suite": cfg.task_suite_name,
@@ -355,6 +380,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 "success": bool(done),
                 "diagnostics_report": diagnostics_report,
                 **safety,
+                "n_actions": len(actions_arr),
+                "actions_sha1": hashlib.sha1(actions_arr.tobytes()).hexdigest(),   # same hash = same actions
             }
             json_l_file.write(json.dumps(record) + "\n")
             json_l_file.flush()
