@@ -79,6 +79,8 @@ class GenerateConfig:
     load_in_4bit: bool = False                       # (For OpenVLA only) Load with 4-bit quantization
 
     center_crop: bool = True                         # Center crop? (if trained w/ random crop image aug)
+    unnorm_key: Optional[str] = None                 # action statistics to un-normalize with; default: the suite's
+                                                     # (the base openvla-7b has none for LIBERO: name one of its own)
 
     #################################################################################################################
     # LIBERO environment-specific parameters
@@ -100,7 +102,8 @@ class GenerateConfig:
     seed: int = 7                                    # Random Seed (for reproducibility)
 
     # additional langauge instructions
-    additional_instruction: str = ""
+    additional_instruction: Optional[str] = None
+    instruction_override: Optional[str] = None
 
     # flag for human model
     human: bool = False
@@ -128,7 +131,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
         print(f"deterministic algorithms on; CUBLAS_WORKSPACE_CONFIG={os.environ.get('CUBLAS_WORKSPACE_CONFIG')}")
 
     # [OpenVLA] Set action un-normalization key
-    cfg.unnorm_key = cfg.task_suite_name
+    cfg.unnorm_key = cfg.unnorm_key or cfg.task_suite_name
 
     # Load model
     model = get_model(cfg)
@@ -139,7 +142,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
         # with the suffix "_no_noops" in the dataset name)
         if cfg.unnorm_key not in model.norm_stats and f"{cfg.unnorm_key}_no_noops" in model.norm_stats:
             cfg.unnorm_key = f"{cfg.unnorm_key}_no_noops"
-        assert cfg.unnorm_key in model.norm_stats, f"Action un-norm key {cfg.unnorm_key} not found in VLA `norm_stats`!"
+        assert cfg.unnorm_key in model.norm_stats, (f"Action un-norm key {cfg.unnorm_key} not found in VLA `norm_stats`! "
+                                                    f"It has: {sorted(model.norm_stats)}")
+        print(f"un-normalizing actions with the statistics of: {cfg.unnorm_key}")
 
     # [OpenVLA] Get Hugging Face processor
     processor = None
@@ -173,6 +178,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
     # every action sent to the env, and a hash of the image the model saw at that step (compare_actions.py)
     actions_path = os.path.join(local_log_dir, "actions")
     os.makedirs(actions_path, exist_ok=True)
+    # VLA_SAVE_FRAMES="7:3,1:0": also keep every raw camera frame and model input of these task:trial episodes
+    # save_frames = {}
 
     # Initialize Weights & Biases logging as well
     if cfg.use_wandb:
@@ -204,6 +211,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
         # Initialize LIBERO environment and task description
         env, task_description = get_libero_env(task, cfg.model_family, resolution=256, additional_instruction=cfg.additional_instruction)
+
+        if cfg.instruction_override is not None:
+            task_description = "" if cfg.instruction_override == "BLANK" else cfg.instruction_override
 
         # cheap check if the support and target objects resolved
         if task_id == 0:
@@ -245,6 +255,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
             replay_images = []
             eef_images = []
             sent_actions, image_hashes, raw_hashes, state_hashes = [], [], [], []
+            qpos_log, qvel_log = [], []
+            # keep_frames = (task_id, episode_idx) in save_frames
+            # raw_frames, model_frames = [], []
             if cfg.task_suite_name == "libero_spatial":
                 max_steps = 220  # longest training demo has 193 steps
             elif cfg.task_suite_name == "libero_object":
@@ -309,6 +322,11 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     raw_hashes.append(hashlib.sha1(np.ascontiguousarray(obs["agentview_image"]).tobytes()).hexdigest())
                     state_hashes.append(hashlib.sha1(np.concatenate(                      # the simulation itself
                         [env.sim.data.qpos, env.sim.data.qvel]).tobytes()).hexdigest())
+                    qpos_log.append(np.array(env.sim.data.qpos))
+                    qvel_log.append(np.array(env.sim.data.qvel))
+                    # if keep_frames:
+                    #     raw_frames.append(np.array(obs["agentview_image"]))
+                    #     model_frames.append(np.array(img))
                     obs, reward, done, info = env.step(action.tolist())
 
                     # update metrics after every step (every tick)
@@ -369,7 +387,11 @@ def eval_libero(cfg: GenerateConfig) -> None:
             actions_arr = np.array(sent_actions).reshape(-1, 7)
             np.savez_compressed(os.path.join(actions_path, f"task{task_id}_trial{episode_idx}.npz"),
                                 actions=actions_arr, image_sha1=np.array(image_hashes),
-                                raw_image_sha1=np.array(raw_hashes), state_sha1=np.array(state_hashes))
+                                raw_image_sha1=np.array(raw_hashes), state_sha1=np.array(state_hashes),
+                                qpos=np.array(qpos_log), qvel=np.array(qvel_log))
+            # if keep_frames:
+            #     np.savez_compressed(os.path.join(actions_path, f"task{task_id}_trial{episode_idx}_frames.npz"),
+            #                         raw=np.array(raw_frames, dtype=np.uint8), model_in=np.array(model_frames, dtype=np.uint8))
 
             # record to json file same as openpi
             record = {
