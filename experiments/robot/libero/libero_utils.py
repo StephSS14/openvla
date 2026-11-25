@@ -2,6 +2,7 @@
 
 import math
 import os
+from typing import Optional
 
 import imageio
 import numpy as np
@@ -15,7 +16,7 @@ from experiments.robot.robot_utils import (
 )
 
 
-def get_libero_env(task, model_family, resolution=256, additional_instruction=""):
+def get_libero_env(task, model_family, resolution=256, additional_instruction: Optional[str] = None):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     if additional_instruction:
